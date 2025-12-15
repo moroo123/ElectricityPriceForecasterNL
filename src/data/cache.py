@@ -1,11 +1,16 @@
 import sqlite3
 import pandas as pd
+import sys
 from pathlib import Path
+
+# Add project root to path to import config
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from src.config import Config
 
 
 class DataCache:
-    def __init__(self, db_path: str = "data/cache.db"):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str = None):
+        self.db_path = Path(db_path) if db_path else Config.DB_PATH
         self.db_path.parent.mkdir(exist_ok=True)
         self._init_tables()
 

@@ -1,14 +1,19 @@
 from entsoe import EntsoePandasClient
 import pandas as pd
-from dotenv import load_dotenv
-import os
+import sys
+from pathlib import Path
 
+# Add project root to path to import config
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from src.config import Config
 
 class EntsoeDataClient:
-    def __init__(self, bidding_zone: str = "NL"):
-        load_dotenv()
-        self.client = EntsoePandasClient(api_key=os.getenv("ENTSOE_API_KEY"))
-        self.bidding_zone = bidding_zone
+    def __init__(self, bidding_zone: str = None):
+        if not Config.ENTSOE_API_KEY:
+            raise ValueError("ENTSOE_API_KEY not found in environment variables")
+            
+        self.client = EntsoePandasClient(api_key=Config.ENTSOE_API_KEY)
+        self.bidding_zone = bidding_zone or Config.BIDDING_ZONE
 
     def get_day_ahead_prices(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
         """Fetch day-ahead prices for the bidding zone."""
