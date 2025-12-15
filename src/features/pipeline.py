@@ -109,7 +109,8 @@ def create_feature_pipeline(
     # Default lag periods (all >= forecast_horizon to avoid leakage)
     if price_lags is None:
         # Include recent lags (0 = current time) provided target is shifted
-        price_lags = [0, 1, 2, 3, 6, 12, 23, 24, 48, 168]
+        # 144 = 168 - 24 (Weekly persistence relative to forecast horizon)
+        price_lags = [0, 1, 2, 3, 6, 12, 23, 24, 48, 144, 168]
     if load_lags is None:
         load_lags = [0, 1, 6, 12, 23, 24, 168]  # 0 is current load/forecast
     if rolling_windows is None:

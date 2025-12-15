@@ -23,6 +23,7 @@ from utils.preprocessing import (
     handle_missing_values
 )
 from utils.logger import setup_logger
+from .baselines import NaivePersistence
 
 logger = setup_logger("train_model")
 
@@ -114,6 +115,40 @@ def train_xgboost_model(
         logger.info(f"Best iteration: {model.best_iteration if eval_set else n_estimators}")
         logger.info(f"Best score: {model.best_score if eval_set else 'N/A'}")
 
+    return model
+
+
+def train_baseline_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    strategy: str = '24h',
+    verbose: bool = True
+) -> NaivePersistence:
+    """
+    Train (initialize) a baseline model.
+    
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features (not used for fitting, but good for consistency)
+    y_train : pd.Series
+        Training target
+    strategy : str, default='24h'
+        '24h' (Daily Persistence) or '168h' (Weekly Persistence)
+    verbose : bool, default=True
+        Whether to print status
+        
+    Returns
+    -------
+    NaivePersistence
+        Initialized baseline model
+    """
+    model = NaivePersistence(strategy=strategy)
+    model.fit(X_train, y_train)
+    
+    if verbose:
+        logger.info(f"Initialized Baseline Model (Strategy: {strategy})")
+        
     return model
 
 
