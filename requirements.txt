@@ -11,3 +11,4 @@ holidays==0.35
 matplotlib==3.10.8
 optuna==3.0.0
 pytest==8.0.0
+streamlit==1.40.2
