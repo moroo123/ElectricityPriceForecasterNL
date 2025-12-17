@@ -131,3 +131,34 @@ class DataCache:
         ranges.append((range_start, prev + pd.Timedelta(hours=1)))
 
         return ranges
+
+    def get_last_timestamp(self, data_type: str, bidding_zone: str = "NL") -> pd.Timestamp:
+        """
+        Get the last (maximum) timestamp for a given data type.
+        
+        Parameters
+        ----------
+        data_type : str
+            Type of data (prices, load_forecast, etc.)
+        bidding_zone : str, default="NL"
+            Bidding zone
+            
+        Returns
+        -------
+        pd.Timestamp or None
+            The last timestamp in UTC, or None if table is empty
+        """
+        valid_types = ["prices", "load_forecast", "actual_load",
+                       "wind_onshore", "wind_offshore", "solar"]
+        if data_type not in valid_types:
+            raise ValueError(f"data_type must be one of {valid_types}")
+            
+        with sqlite3.connect(self.db_path) as conn:
+            query = f"SELECT MAX(timestamp) FROM {data_type} WHERE bidding_zone = ?"
+            cursor = conn.cursor()
+            cursor.execute(query, (bidding_zone,))
+            result = cursor.fetchone()
+            
+        if result and result[0]:
+            return pd.Timestamp(result[0]).tz_convert("UTC")
+        return None

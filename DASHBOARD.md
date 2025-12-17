@@ -45,6 +45,10 @@ Use the sidebar to choose which dataset to analyze:
 Check/uncheck models to include in the comparison:
 - **Baseline 24h Persistence**: Simple model that predicts tomorrow's price = today's price
 - **Baseline 168h Persistence**: Predicts next week's price = last week's price
+- **ARIMA (Train on-the-fly)**: Statistical time series model with optional auto-tuning
+  - Configure ARIMA order (p, d, q) manually or use Auto-ARIMA
+  - Uses exogenous variables (load, renewables, temporal features)
+  - Note: Training takes 1-5 minutes depending on settings
 - **XGBoost Models**: All trained XGBoost models from the `models/` directory
 
 ### 3. Adjust Visualization
@@ -81,6 +85,11 @@ The dashboard automatically detects all models in the `models/` directory. Curre
 
 1. **xgboost_24h_forecast**: Basic XGBoost model with default hyperparameters
 2. **xgboost_24h_tuned**: Hyperparameter-optimized XGBoost model (via Optuna)
+3. **ARIMA/SARIMAX**: Statistical time series model trained on-demand
+   - Supports manual order configuration (p, d, q)
+   - Auto-ARIMA option for automatic order selection (slow but optimal)
+   - Uses exogenous variables: load forecast, renewables, temporal features
+   - Good for capturing linear trends and seasonality
 
 ## Tips
 

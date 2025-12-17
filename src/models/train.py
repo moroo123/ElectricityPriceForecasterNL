@@ -24,6 +24,7 @@ from utils.preprocessing import (
 )
 from utils.logger import setup_logger
 from .baselines import NaivePersistence
+from .statistical import ArimaEstimator
 
 logger = setup_logger("train_model")
 
@@ -148,6 +149,36 @@ def train_baseline_model(
     
     if verbose:
         logger.info(f"Initialized Baseline Model (Strategy: {strategy})")
+        
+    return model
+
+
+def train_statistical_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    order: tuple = (1, 1, 1),
+    seasonal_order: tuple = (0, 0, 0, 0),
+    exog_cols: list = None,
+    use_auto_arima: bool = False,
+    verbose: bool = True
+) -> ArimaEstimator:
+    """
+    Train an ARIMA/SARIMAX model.
+    """
+    model = ArimaEstimator(
+        order=order,
+        seasonal_order=seasonal_order,
+        use_auto_arima=use_auto_arima,
+        exog_cols=exog_cols
+    )
+    
+    if verbose:
+        logger.info(f"Training ARIMA Model (Auto: {use_auto_arima})...")
+        
+    model.fit(X_train, y_train)
+    
+    if verbose:
+        logger.info("ARIMA training complete.")
         
     return model
 
@@ -416,8 +447,11 @@ def predict_future(
     # Create features (without target)
     X, _ = feature_engine.prepare_data(data, create_target=False)
 
+    # Scale features
+    X_scaled = feature_engine.transform(X)
+
     # Make predictions
-    predictions = model.predict(X)
+    predictions = model.predict(X_scaled)
 
     # Create series with appropriate timestamps
     pred_index = X.index + pd.Timedelta(hours=forecast_horizon)

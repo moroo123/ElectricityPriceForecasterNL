@@ -13,8 +13,9 @@ sys.path.append('src')
 
 from utils.preprocessing import create_merged_dataset, split_train_val_test, handle_missing_values
 from features.pipeline import TimeSeriesFeatureEngine
-from models.train import load_model, evaluate_model
+from models.train import load_model, evaluate_model, train_statistical_model
 from models.baselines import NaivePersistence
+from models.statistical import ArimaEstimator
 
 
 @st.cache_data
@@ -114,13 +115,27 @@ def plot_predictions(y_true, predictions_dict, start_idx=0, n_hours=168):
     ))
 
     # Predictions from each model
-    colors = ['green', 'blue', 'red', 'orange', 'purple']
+    color_map = {
+        'Baseline 24h': 'blue',
+        'Baseline 168h': 'red',
+        'ARIMA': 'purple',
+    }
+    default_colors = ['green', 'orange', 'cyan', 'magenta', 'yellow']
+
     for i, (name, pred) in enumerate(predictions_dict.items()):
+        # Use specific color if defined, otherwise cycle through defaults
+        if name in color_map:
+            color = color_map[name]
+        elif 'xgboost' in name.lower():
+            color = default_colors[i % len(default_colors)]
+        else:
+            color = default_colors[i % len(default_colors)]
+
         fig.add_trace(go.Scatter(
             x=y_true.index[start_idx:end_idx],
             y=pred[start_idx:end_idx],
             name=name,
-            line=dict(color=colors[i % len(colors)], width=1.5),
+            line=dict(color=color, width=1.5),
             mode='lines'
         ))
 
@@ -233,8 +248,40 @@ def main():
         st.error("No models found in the models directory. Please train a model first.")
         return
 
-    # Sidebar
+    # Check for live update
+    # Check for live update (Initial or Auto-Refresh > 1h)
+    should_update = False
+    now = pd.Timestamp.now(tz="UTC")
+    
+    if "last_update_time" not in st.session_state:
+        should_update = True
+    else:
+        # Check if 1 hour has passed
+        if (now - st.session_state["last_update_time"]) > pd.Timedelta(hours=1):
+            should_update = True
+            
+    if should_update:
+        with st.spinner("Fetching latest data from ENTSO-E (Incremental Update)..."):
+            from src.dashboard.utils import update_recent_data
+            status = update_recent_data(days_ahead=3)
+            if status:
+                st.success(f"Data updated: {', '.join(status)}")
+            
+            st.session_state["last_update_time"] = now
+            
+            # Reload data after update
+            load_data.clear() # Clear cache to force reload
+            with st.spinner("Reloading data..."):
+                df_clean, train_df, val_df, test_df = load_data()
+
+
+    # Sidebar - Mode Selection
     st.sidebar.header("Configuration")
+    mode = st.sidebar.radio("Mode", ["Model Comparison", "Live Forecast"])
+
+    if mode == "Live Forecast":
+        render_live_forecast(xgb_models)
+        return
 
     # Dataset selection
     dataset_choice = st.sidebar.selectbox(
@@ -254,11 +301,24 @@ def main():
 
     include_baseline_24h = st.sidebar.checkbox("Baseline 24h Persistence", value=True)
     include_baseline_168h = st.sidebar.checkbox("Baseline 168h Persistence", value=True)
+    include_arima = st.sidebar.checkbox("ARIMA (Train on-the-fly)", value=False)
 
     selected_xgb_models = []
     for model_name in xgb_models.keys():
         if st.sidebar.checkbox(f"XGBoost: {model_name}", value=True):
             selected_xgb_models.append(model_name)
+
+    # ARIMA configuration (if enabled)
+    if include_arima:
+        with st.sidebar.expander("ARIMA Settings"):
+            use_auto_arima = st.checkbox("Use Auto-ARIMA (slow)", value=False)
+            if not use_auto_arima:
+                p = st.slider("p (AR order)", 0, 5, 1)
+                d = st.slider("d (differencing)", 0, 2, 1)
+                q = st.slider("q (MA order)", 0, 5, 1)
+                arima_order = (p, d, q)
+            else:
+                arima_order = None
 
     # Time range selection
     st.sidebar.subheader("Visualization Settings")
@@ -354,6 +414,64 @@ def main():
             # Set y for plots (all models should have same target)
             if y is None:
                 y = y_model
+
+        # ARIMA model (train on-the-fly)
+        if include_arima:
+            st.info("Training ARIMA model... This may take a few minutes.")
+
+            try:
+                # Use simple features for ARIMA (no lags to avoid stationarity issues)
+                first_model_name = list(xgb_models.keys())[0]
+                arima_fe = xgb_models[first_model_name]['feature_engine']
+
+                # Create features on full dataset
+                X_full_arima, y_full_arima = prepare_features(df_clean, arima_fe)
+
+                # Split based on dataset choice
+                if dataset_choice == "Train":
+                    X_arima_pred = X_full_arima[X_full_arima.index <= train_end_date]
+                    y_arima_pred = y_full_arima[y_full_arima.index <= train_end_date]
+                elif dataset_choice == "Validation":
+                    X_arima_pred = X_full_arima[(X_full_arima.index > train_end_date) & (X_full_arima.index <= val_end_date)]
+                    y_arima_pred = y_full_arima[(y_full_arima.index > train_end_date) & (y_full_arima.index <= val_end_date)]
+                else:  # Test
+                    X_arima_pred = X_full_arima[X_full_arima.index > val_end_date]
+                    y_arima_pred = y_full_arima[y_full_arima.index > val_end_date]
+
+                # Get train data
+                X_arima_train = X_full_arima[X_full_arima.index <= train_end_date]
+                y_arima_train = y_full_arima[y_full_arima.index <= train_end_date]
+
+                # Select a small subset of exogenous features (avoid overfitting)
+                basic_features = ['load_forecast', 'wind_onshore', 'wind_offshore', 'solar',
+                                 'hour_sin', 'hour_cos', 'day_of_week_sin', 'day_of_week_cos']
+                exog_cols = [c for c in basic_features if c in X_arima_train.columns]
+
+                # Train ARIMA
+                if use_auto_arima:
+                    arima_model = ArimaEstimator(use_auto_arima=True, exog_cols=exog_cols, max_exog_size=5000)
+                else:
+                    arima_model = ArimaEstimator(order=arima_order, exog_cols=exog_cols, use_auto_arima=False)
+
+                with st.spinner("Training ARIMA model..."):
+                    arima_model.fit(X_arima_train, y_arima_train)
+                    pred_arima = arima_model.predict(X_arima_pred)
+
+                all_predictions['ARIMA'] = pred_arima
+                all_metrics['ARIMA'] = {
+                    'MAE': np.mean(np.abs(y_arima_pred.values - pred_arima)),
+                    'RMSE': np.sqrt(np.mean((y_arima_pred.values - pred_arima)**2)),
+                    'R2': 1 - np.sum((y_arima_pred.values - pred_arima)**2) / np.sum((y_arima_pred.values - np.mean(y_arima_pred.values))**2)
+                }
+
+                if y is None:
+                    y = y_arima_pred
+
+                st.success("ARIMA model trained successfully!")
+
+            except Exception as e:
+                st.error(f"ARIMA training failed: {str(e)}")
+                st.info("Try using simpler ARIMA settings or disable Auto-ARIMA.")
 
     # Display metrics
     st.header(f"📊 Performance Metrics ({dataset_choice} Set)")
@@ -510,6 +628,128 @@ def main():
                 st.write(f"  - Min: {lag_144.min():.2f}, Max: {lag_144.max():.2f}")
             else:
                 st.write("⚠️ price_lag_144 column not found in features!")
+
+
+
+def render_live_forecast(xgb_models):
+    """Render the Live Forecast dashboard."""
+    st.header("🔮 Live Electricity Price Forecast")
+    
+    # Configuration
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_model_name = st.selectbox(
+            "Select Model",
+            list(xgb_models.keys()),
+            index=0
+        )
+    with col2:
+        hours_history_viz = st.slider("Visible History (Hours)", 24, 168, 48)
+
+    model_data = xgb_models[selected_model_name]
+    model = model_data['model']
+    feature_engine = model_data['feature_engine']
+
+    # 1. Get Live Data
+    # IMPORTANT: We need enough history for lag features (e.g. 168h lags)
+    # The feature engine needs at least ~168h + buffer.
+    # We fetch 336h (14 days) to be safe for all lags/rolling windows.
+    HOURS_FOR_INFERENCE = 336 
+    
+    from src.dashboard.utils import get_live_data
+    from src.models.train import predict_future
+
+    # Fetch 24h forecast data (instead of 48h)
+    df_live = get_live_data(hours_history=HOURS_FOR_INFERENCE, hours_forecast=24)
+    
+    if df_live.empty:
+        st.warning("No recent data found. Please check your connection or try again later.")
+        return
+
+    # Check for gaps
+    now = pd.Timestamp.now(tz="Europe/Amsterdam")
+    last_data_point = df_live.index.max()
+    minutes_since_update = (now - last_data_point).total_seconds() / 60
+    
+    if minutes_since_update > 65:
+         st.warning(f"⚠️ Data might be stale. Last update: {last_data_point.strftime('%Y-%m-%d %H:%M')}")
+    else:
+         st.success(f"✅ Data up-to-date (Last: {last_data_point.strftime('%H:%M')})")
+
+    # 2. Make Prediction (Forecast Horizon strict 24h)
+    
+    try:
+        forecast_horizon = 24
+        # predict_future returns a Series with index = target timestamps
+        pred_series = predict_future(model, feature_engine, df_live, forecast_horizon=forecast_horizon)
+        
+        pred_series = pred_series[pred_series.index <= now + pd.Timedelta(hours=24)]
+        
+        # 3. Visualization
+        st.subheader("Price Forecast (Next 24 Hours)")
+        
+        # Combine History + Forecast
+        # History: actual prices up to now
+        history_prices = df_live['price'].dropna()
+        # Filter for visualization window
+        viz_start_time = now - pd.Timedelta(hours=hours_history_viz)
+        history_prices = history_prices[(history_prices.index <= now) & (history_prices.index >= viz_start_time)]
+        
+        fig = go.Figure()
+        
+        # Historical Prices
+        fig.add_trace(go.Scatter(
+            x=history_prices.index,
+            y=history_prices.values,
+            name='History',
+            line=dict(color='gray', width=2),
+            mode='lines'
+        ))
+        
+        # Forecast
+        # Only show future part
+        future_pred = pred_series[pred_series.index > now]
+        
+        fig.add_trace(go.Scatter(
+            x=future_pred.index,
+            y=future_pred.values,
+            name='Forecast',
+            line=dict(color='blue', width=3),
+            mode='lines+markers'
+        ))
+        
+        # Add "Now" line
+        fig.add_vline(x=now.timestamp() * 1000, line_dash="dash", line_color="red", annotation_text="Now")
+        
+        fig.update_layout(
+            # title='Live Price Forecast',
+            xaxis_title='Time',
+            yaxis_title='Price (€/MWh)',
+            height=500,
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 4. Key Metrics / Stats
+        col1, col2, col3 = st.columns(3)
+        with col1:
+             avg_price = future_pred.mean()
+             st.metric("Avg Forecast Price", f"€{avg_price:.2f}")
+        with col2:
+             min_price = future_pred.min()
+             st.metric("Min Price", f"€{min_price:.2f}")
+        with col3:
+             max_price = future_pred.max()
+             st.metric("Max Price", f"€{max_price:.2f}")
+             
+        # 5. Data Table
+        with st.expander("View Forecast Data"):
+            st.dataframe(future_pred.to_frame(name="Predicted Price"))
+            
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
+        st.info("Ensure you have sufficient historical data (run updates) specifically ensuring lag features can be calculated.")
 
 
 if __name__ == "__main__":

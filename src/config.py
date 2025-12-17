@@ -15,8 +15,19 @@ class Config:
     MODELS_DIR = PROJECT_ROOT / "models"
     
     # External APIs
+    # Priority: Env Var > Streamlit Secrets (if available)
     ENTSOE_API_KEY = os.getenv("ENTSOE_API_KEY")
     
+    if not ENTSOE_API_KEY:
+        try:
+            import streamlit as st
+            if "ENTSOE_API_KEY" in st.secrets:
+                ENTSOE_API_KEY = st.secrets["ENTSOE_API_KEY"]
+        except ImportError:
+            pass
+        except Exception:
+            pass
+            
     # Market Settings
     BIDDING_ZONE = "NL"
     

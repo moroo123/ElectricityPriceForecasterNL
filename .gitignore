@@ -209,4 +209,4 @@ src/.DS_Store
 .DS_Store
 
 # Streamlit
-.streamlit/
+.streamlit/secrets.toml
